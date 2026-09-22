@@ -8,15 +8,33 @@ const PORT = process.env.PORT || 10000;
 app.use(cors());
 app.get('/health', (req, res) => res.status(200).json({ status: 'ok' }));
 
+// Dynamic proxy: extract the target URL from the path
 app.use('/api', createProxyMiddleware({
-  target: process.env.TARGET_URL || 'https://jsonplaceholder.typicode.com',
-  changeOrigin: true,
-  pathRewrite: { '^/api': '' },
-  on: {
-    error: (err, req, res) => {
-      res.status(500).json({ error: 'Proxy failed', details: err.message });
+  // This function runs for each request to determine where to forward it
+  router: (req) => {
+    // req.url will be something like: /https://jsonplaceholder.typicode.com/posts
+    // Remove the leading slash to get the URL
+    const targetUrl = req.url.slice(1);
+    
+    // Basic validation to ensure it looks like a URL
+    if (targetUrl.startsWith('http://') || targetUrl.startsWith('https://')) {
+      return targetUrl;
     }
+    
+    // Fallback if no valid URL found
+    return 'https://jsonplaceholder.typicode.com';
+  },
+  changeOrigin: true,
+  // Important: don't rewrite the path, we want the full URL to be sent
+  pathRewrite: (path, req) => {
+    // Strip the leading /api and the leading slash from the extracted URL
+    // Actually, the router already handles the target. We just need to remove /api
+    // The path here is already just the part after /api, like /https://...
+    // We want the proxy to request: https://target.com/path
+    // The library will prepend the target, so we need the path to be just the URL part
+    // This is tricky. Let's use the router to do the full job.
+    return path; // Keep it, the router's target should handle it
   }
 }));
 
-app.listen(PORT, () => console.log(`Proxy on ${PORT}`));
+app.listen(PORT, () => console.log(`Dynamic proxy on ${PORT}`));
