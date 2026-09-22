@@ -5,36 +5,54 @@ const cors = require('cors');
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-app.use(cors());
+// 1. Apply CORS middleware FIRST — but with proper preflight handling
+app.use(cors({
+  origin: '*',
+  methods: ['GET', 'POST', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+  credentials: false
+}));
+
+// 2. CRITICAL: Handle OPTIONS preflight BEFORE the proxy
+app.options('/api/*', (req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
+  res.setHeader('Access-Control-Max-Age', '86400'); // Cache preflight for 24h
+  res.status(204).end();
+});
+
 app.get('/health', (req, res) => res.status(200).json({ status: 'ok' }));
 
-// Dynamic proxy: extract the target URL from the path
-app.use('/api', createProxyMiddleware({
-  // This function runs for each request to determine where to forward it
-  router: (req) => {
-    // req.url will be something like: /https://jsonplaceholder.typicode.com/posts
-    // Remove the leading slash to get the URL
-    const targetUrl = req.url.slice(1);
-    
-    // Basic validation to ensure it looks like a URL
-    if (targetUrl.startsWith('http://') || targetUrl.startsWith('https://')) {
-      return targetUrl;
-    }
-    
-    // Fallback if no valid URL found
-    return 'https://jsonplaceholder.typicode.com';
-  },
-  changeOrigin: true,
-  // Important: don't rewrite the path, we want the full URL to be sent
-  pathRewrite: (path, req) => {
-    // Strip the leading /api and the leading slash from the extracted URL
-    // Actually, the router already handles the target. We just need to remove /api
-    // The path here is already just the part after /api, like /https://...
-    // We want the proxy to request: https://target.com/path
-    // The library will prepend the target, so we need the path to be just the URL part
-    // This is tricky. Let's use the router to do the full job.
-    return path; // Keep it, the router's target should handle it
+// 3. Your dynamic proxy — now only handles actual requests (GET/POST)
+app.use('/api', (req, res, next) => {
+  const fullUrl = req.url.slice(1);
+  
+  if (!fullUrl.startsWith('http://') && !fullUrl.startsWith('https://')) {
+    return res.status(400).json({ error: 'Invalid target URL' });
   }
-}));
+
+  let targetOrigin, targetPath;
+  try {
+    const parsed = new URL(fullUrl);
+    targetOrigin = parsed.origin;
+    targetPath = parsed.pathname + parsed.search;
+  } catch (e) {
+    return res.status(400).json({ error: 'Malformed URL' });
+  }
+
+  const proxy = createProxyMiddleware({
+    target: targetOrigin,
+    changeOrigin: true,
+    pathRewrite: () => targetPath,
+    on: {
+      error: (err, req, res) => {
+        res.status(500).json({ error: 'Proxy failed', details: err.message });
+      }
+    }
+  });
+
+  proxy(req, res, next);
+});
 
 app.listen(PORT, () => console.log(`Dynamic proxy on ${PORT}`));
